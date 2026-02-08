@@ -23,6 +23,7 @@ class SpanInfo:
     color: int
     flags: int
     bbox: fitz.Rect
+    origin: tuple[float, float]  # baseline insertion point (x, y)
     page_num: int
 
 
@@ -37,17 +38,18 @@ class ReplacementResult:
 
 
 def _extract_spans(page: fitz.Page, page_num: int) -> list[SpanInfo]:
-    """Extract all text spans from a page with full metadata."""
+    """Extract all text spans from a page with full metadata including origin."""
     spans: list[SpanInfo] = []
     blocks = page.get_text("dict", flags=fitz.TEXT_PRESERVE_WHITESPACE)["blocks"]
 
     for block in blocks:
-        if block.get("type") != 0:  # text block
+        if block.get("type") != 0:
             continue
         for line in block.get("lines", []):
             for span in line.get("spans", []):
                 if not span["text"].strip():
                     continue
+                origin = span.get("origin", (span["bbox"][0], span["bbox"][3]))
                 spans.append(
                     SpanInfo(
                         text=span["text"],
@@ -56,91 +58,29 @@ def _extract_spans(page: fitz.Page, page_num: int) -> list[SpanInfo]:
                         color=span["color"],
                         flags=span["flags"],
                         bbox=fitz.Rect(span["bbox"]),
+                        origin=(origin[0], origin[1]),
                         page_num=page_num,
                     )
                 )
     return spans
 
 
-def _find_and_collect_spans(
-    spans: list[SpanInfo],
-    search_text: str,
-    case_sensitive: bool,
-) -> list[list[SpanInfo]]:
-    """Find occurrences of search_text that may span across multiple spans.
-
-    Returns a list of span groups, where each group forms one match.
-    """
-    matches: list[list[SpanInfo]] = []
-
-    def _normalize(t: str) -> str:
-        return t if case_sensitive else t.lower()
-
-    search_norm = _normalize(search_text)
-    i = 0
-
-    while i < len(spans):
-        # Try to build the search text by concatenating consecutive spans
-        combined = ""
-        group: list[SpanInfo] = []
-
-        for j in range(i, len(spans)):
-            span = spans[j]
-            combined += _normalize(span.text)
-            group.append(span)
-
-            if search_norm in combined:
-                matches.append(list(group))
-                break
-
-            # Stop if combined text is already longer than search text
-            # and doesn't contain it
-            if len(combined) > len(search_norm) * 2:
-                break
-
-        i += 1
-
-    return matches
-
-
-def _resolve_font(
-    doc: fitz.Document,
-    page: fitz.Page,
-    original_font: str,
-    target_text: str,
-) -> str:
-    """Try to resolve a usable font name for insertion.
-
-    PyMuPDF can only insert text with Base-14 fonts or fonts that are
-    registered. If the original font is embedded and not usable for
-    insertion, fall back to a reasonable Base-14 alternative.
-    """
+def _resolve_font(original_font: str) -> str:
+    """Map original font name to a usable Base-14 font for insertion."""
     base14 = [
-        "Helvetica",
-        "Helvetica-Bold",
-        "Helvetica-Oblique",
-        "Helvetica-BoldOblique",
-        "Times-Roman",
-        "Times-Bold",
-        "Times-Italic",
-        "Times-BoldItalic",
-        "Courier",
-        "Courier-Bold",
-        "Courier-Oblique",
-        "Courier-BoldOblique",
-        "Symbol",
-        "ZapfDingbats",
+        "Helvetica", "Helvetica-Bold", "Helvetica-Oblique", "Helvetica-BoldOblique",
+        "Times-Roman", "Times-Bold", "Times-Italic", "Times-BoldItalic",
+        "Courier", "Courier-Bold", "Courier-Oblique", "Courier-BoldOblique",
+        "Symbol", "ZapfDingbats",
     ]
 
-    # Check if font name matches a base14 font
     font_lower = original_font.lower()
     for b14 in base14:
         if b14.lower() in font_lower:
             return b14
 
-    # Heuristic mapping
     if "arial" in font_lower or "helvetica" in font_lower or "sans" in font_lower:
-        if "bold" in font_lower and "italic" in font_lower:
+        if "bold" in font_lower and ("italic" in font_lower or "oblique" in font_lower):
             return "Helvetica-BoldOblique"
         if "bold" in font_lower:
             return "Helvetica-Bold"
@@ -164,7 +104,6 @@ def _resolve_font(
             return "Courier-Oblique"
         return "Courier"
 
-    # Default fallback
     return "Helvetica"
 
 
@@ -174,6 +113,32 @@ def _int_to_rgb(color_int: int) -> tuple[float, float, float]:
     g = ((color_int >> 8) & 0xFF) / 255.0
     b = (color_int & 0xFF) / 255.0
     return (r, g, b)
+
+
+def _try_extract_font(doc: fitz.Document, page: fitz.Page, font_name: str) -> str | None:
+    """Try to extract an embedded font and register it for reuse.
+
+    Returns the registered fontname if successful, None otherwise.
+    """
+    try:
+        fonts = page.get_fonts(full=True)
+        for font_info in fonts:
+            xref = font_info[0]
+            fname = font_info[3]  # font basename
+            refname = font_info[4]  # reference name used in page
+
+            if fname == font_name or refname == font_name:
+                font_data = doc.extract_font(xref)
+                if font_data and font_data[3]:  # has binary content
+                    registered = page.insert_font(
+                        fontname=refname,
+                        fontbuffer=font_data[3],
+                    )
+                    if registered:
+                        return registered
+    except Exception as e:
+        logger.debug("Could not extract font '%s': %s", font_name, e)
+    return None
 
 
 def _replace_on_page(
@@ -186,93 +151,115 @@ def _replace_on_page(
 ) -> int:
     """Replace all occurrences of search_text with replace_text on a page.
 
+    Uses span-level metadata for precise font, size, color, and baseline
+    position matching.
+
     Returns the number of replacements made.
     """
-    count = 0
-
-    # Use PyMuPDF's built-in search to find text locations
-    flags = 0 if case_sensitive else fitz.TEXT_PRESERVE_WHITESPACE
+    # Find all instances using PyMuPDF search
     text_instances = page.search_for(search_text)
-
     if not text_instances:
         return 0
 
-    # Extract spans to get font metadata for the first occurrence
+    # Extract all spans with full metadata (including origin/baseline)
     spans = _extract_spans(page, page_num)
-    ref_span: SpanInfo | None = None
 
-    # Find the span that overlaps with the first found instance
+    # For each found instance, collect its specific font properties
+    instance_data: list[dict] = []
     for inst_rect in text_instances:
+        # Find the span that best overlaps this instance
+        best_span: SpanInfo | None = None
+        best_overlap = 0.0
+
         for span in spans:
-            if span.bbox.intersects(inst_rect):
-                ref_span = span
-                break
-        if ref_span:
-            break
+            intersection = span.bbox & inst_rect  # intersection rect
+            if intersection.is_empty:
+                continue
+            overlap = intersection.width * intersection.height
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_span = span
 
-    if not ref_span:
-        # Fallback: use default styling
-        ref_span = SpanInfo(
-            text="",
-            font="Helvetica",
-            size=11.0,
-            color=0,
-            flags=0,
-            bbox=fitz.Rect(),
-            page_num=page_num,
-        )
+        if best_span:
+            # Use the span's exact origin for baseline positioning
+            # Adjust x to match the search hit's x position
+            insert_x = inst_rect.x0
+            insert_y = best_span.origin[1]
 
-    # Resolve a usable font
-    font_name = _resolve_font(doc, page, ref_span.font, replace_text)
-    font_size = ref_span.size
-    font_color = _int_to_rgb(ref_span.color)
+            instance_data.append({
+                "rect": inst_rect,
+                "font": best_span.font,
+                "size": best_span.size,
+                "color": best_span.color,
+                "flags": best_span.flags,
+                "origin": (insert_x, insert_y),
+            })
+        else:
+            # Fallback: estimate baseline from bbox
+            # Baseline is typically ~80% down from top of bbox
+            baseline_y = inst_rect.y0 + (inst_rect.height * 0.82)
+            instance_data.append({
+                "rect": inst_rect,
+                "font": "Helvetica",
+                "size": 11.0,
+                "color": 0,
+                "flags": 0,
+                "origin": (inst_rect.x0, baseline_y),
+            })
 
-    # Apply redactions for each instance, then insert new text
-    for inst_rect in text_instances:
-        # Add redaction annotation (white rectangle over old text)
-        annot = page.add_redact_annot(inst_rect)
-        count += 1
+    if not instance_data:
+        return 0
 
-    # Apply all redactions at once
+    # Phase 1: Add redaction annotations for all instances
+    for data in instance_data:
+        page.add_redact_annot(data["rect"])
+
+    # Apply all redactions at once (removes old text)
     page.apply_redactions()
 
-    # Now re-search won't work since text is gone,
-    # so we insert at the saved positions
-    for inst_rect in text_instances:
-        # Calculate text insertion point (left-bottom of bbox)
-        insert_point = fitz.Point(inst_rect.x0, inst_rect.y1 - 2)
+    # Phase 2: Insert new text at each position with original formatting
+    count = 0
+    for data in instance_data:
+        font_name_original = data["font"]
+        font_size = data["size"]
+        font_color = _int_to_rgb(data["color"])
+        origin = data["origin"]
 
-        # Adjust font size if replacement text is longer
-        adjusted_size = font_size
-        available_width = inst_rect.width
-        text_width = fitz.get_text_length(replace_text, fontname=font_name, fontsize=font_size)
+        # Try to reuse the embedded font first
+        registered_font = _try_extract_font(doc, page, font_name_original)
 
-        if text_width > available_width and available_width > 0:
-            # Scale font size down to fit
-            ratio = available_width / text_width
-            adjusted_size = max(font_size * ratio, 4.0)  # minimum 4pt
+        if registered_font:
+            fontname_to_use = registered_font
+        else:
+            fontname_to_use = _resolve_font(font_name_original)
+
+        insert_point = fitz.Point(origin[0], origin[1])
 
         try:
             page.insert_text(
                 insert_point,
                 replace_text,
-                fontname=font_name,
-                fontsize=adjusted_size,
+                fontname=fontname_to_use,
+                fontsize=font_size,
                 color=font_color,
             )
+            count += 1
         except Exception as e:
             logger.warning(
-                "Failed to insert text with font %s, falling back to Helvetica: %s",
-                font_name,
-                e,
+                "Failed with font '%s' (from '%s'), trying Helvetica: %s",
+                fontname_to_use, font_name_original, e,
             )
-            page.insert_text(
-                insert_point,
-                replace_text,
-                fontname="helv",
-                fontsize=adjusted_size,
-                color=font_color,
-            )
+            try:
+                page.insert_text(
+                    insert_point,
+                    replace_text,
+                    fontname="helv",
+                    fontsize=font_size,
+                    color=font_color,
+                )
+                count += 1
+            except Exception as e2:
+                logger.error("Text insertion failed completely: %s", e2)
 
     return count
 
@@ -328,7 +315,7 @@ def replace_text(
                 ReplacementResult(
                     original=search_text,
                     replacement=new_text,
-                    page=-1,  # -1 means all pages
+                    page=-1,
                     count=total_count,
                 )
             )
