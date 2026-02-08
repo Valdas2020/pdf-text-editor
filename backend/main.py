@@ -684,7 +684,7 @@ ONCHAIN_PAY_HTML = """<!DOCTYPE html>
         let expiresAt = null;
 
         async function selectNetwork(network) {
-            const resp = await fetch('/api/create-onchain-payment/' + RESULT_FILE_ID + '?network=' + network);
+            const resp = await fetch('/api/create-onchain-payment/' + RESULT_FILE_ID + '?network=' + network, {method: 'POST'});
             if (!resp.ok) { alert('Error creating payment'); return; }
             paymentData = await resp.json();
 
