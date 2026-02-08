@@ -149,23 +149,55 @@
         <!-- Result -->
         <div id="result-section" class="mt-8 hidden">
             <div class="bg-gray-800/50 rounded-xl p-6 border border-gray-700">
-                <h3 class="font-semibold mb-3">Result</h3>
-
+                <h3 class="font-semibold mb-3">Result Preview</h3>
                 <div id="result-stats" class="text-sm text-gray-400 mb-4"></div>
-
-                <!-- Image Preview -->
-                <div id="image-preview" class="mb-4 hidden">
-                    <img id="preview-img" class="max-w-full rounded-lg border border-gray-700" alt="Preview">
-                </div>
-
-                <button id="download-btn"
+                <div id="preview-container" class="mb-4 space-y-4"></div>
+                <button id="pay-btn"
                         class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-xl transition-colors">
-                    Download Result
+                    &#x1F4B3; Pay &amp; Download Result — $5
                 </button>
             </div>
         </div>
 
     </main>
+
+    <!-- Payment Modal -->
+    <div id="payment-modal" class="fixed inset-0 z-50 hidden">
+        <div class="absolute inset-0 bg-black/70" id="modal-overlay"></div>
+        <div class="relative flex items-center justify-center min-h-screen p-4">
+            <div class="bg-[#1e293b] rounded-2xl border border-gray-700 w-full max-w-md p-6 shadow-2xl relative z-10">
+                <h2 class="text-xl font-bold text-center mb-6">Payment — $5</h2>
+                <p class="text-sm text-gray-400 text-center mb-6">Choose payment method:</p>
+
+                <button id="pay-telegram-btn"
+                        class="w-full bg-[#0088cc] hover:bg-[#006fa3] text-white font-semibold py-4 px-4 rounded-xl transition-colors mb-3 text-left">
+                    <span class="text-lg">&#x1F916; Pay $5 via Telegram (USDT)</span>
+                    <br><span class="text-xs opacity-80">Instant &bull; Via CryptoBot</span>
+                </button>
+                <p id="telegram-redirect-hint" class="text-xs text-gray-500 text-center mb-3">You'll be redirected to Telegram</p>
+
+                <div id="post-pay-section" class="hidden mb-3">
+                    <p class="text-sm text-gray-400 text-center mb-3">After payment, click below to download:</p>
+                    <button id="confirm-paid-btn"
+                            class="w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 rounded-xl transition-colors">
+                        &#x2705; I've paid — Download
+                    </button>
+                </div>
+
+                <button id="pay-onchain-btn"
+                        class="w-full bg-[#26a17b] hover:bg-[#1e8a69] text-white font-semibold py-4 px-4 rounded-xl transition-colors mb-6 text-left">
+                    <span class="text-lg">&#x1F4B0; Pay $5 in USDT / USDC</span>
+                    <br><span class="text-xs opacity-80">On-chain &bull; Any wallet</span>
+                </button>
+
+                <div class="text-center">
+                    <button id="modal-cancel" class="text-sm text-gray-500 hover:text-gray-300 transition-colors">
+                        Cancel
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
 
     <footer class="border-t border-gray-800 py-6 text-center text-sm text-gray-500">
         PDF Text Editor &mdash; AI-Powered Find &amp; Replace

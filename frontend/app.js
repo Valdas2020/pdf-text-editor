@@ -34,15 +34,23 @@ const errorText = document.getElementById('error-text');
 
 const resultSection = document.getElementById('result-section');
 const resultStats = document.getElementById('result-stats');
-const imagePreview = document.getElementById('image-preview');
-const previewImg = document.getElementById('preview-img');
-const downloadBtn = document.getElementById('download-btn');
+const previewContainer = document.getElementById('preview-container');
+const payBtn = document.getElementById('pay-btn');
+
+// Payment modal elements
+const paymentModal = document.getElementById('payment-modal');
+const modalOverlay = document.getElementById('modal-overlay');
+const modalCancel = document.getElementById('modal-cancel');
+const payTelegramBtn = document.getElementById('pay-telegram-btn');
+const payOnchainBtn = document.getElementById('pay-onchain-btn');
+const postPaySection = document.getElementById('post-pay-section');
+const confirmPaidBtn = document.getElementById('confirm-paid-btn');
+const telegramRedirectHint = document.getElementById('telegram-redirect-hint');
 
 // State
 let selectedFile = null;
-let currentMode = 'ai'; // 'ai' | 'manual'
-let resultBlob = null;
-let resultFilename = '';
+let currentMode = 'ai';
+let currentResultFileId = null;
 
 // --- File handling ---
 
@@ -145,14 +153,11 @@ function addReplacementRow() {
         <button class="remove-row text-gray-500 hover:text-red-400 px-2">&times;</button>
     `;
     replacementRows.appendChild(row);
-
     row.querySelector('.remove-row').addEventListener('click', () => {
         row.remove();
         updateRemoveButtons();
         updateSubmitState();
     });
-
-    // Update submit state when inputs change
     row.querySelectorAll('input').forEach(input => {
         input.addEventListener('input', updateSubmitState);
     });
@@ -160,7 +165,7 @@ function addReplacementRow() {
 
 function updateRemoveButtons() {
     const rows = replacementRows.querySelectorAll('.replacement-row');
-    rows.forEach((row, i) => {
+    rows.forEach(row => {
         const btn = row.querySelector('.remove-row');
         if (rows.length <= 1) {
             btn.classList.add('hidden');
@@ -170,31 +175,26 @@ function updateRemoveButtons() {
     });
 }
 
-// Attach events to initial row
 document.querySelectorAll('.replacement-row input').forEach(input => {
     input.addEventListener('input', updateSubmitState);
 });
-
 promptTextarea.addEventListener('input', updateSubmitState);
 
 // --- Submit state ---
 
 function updateSubmitState() {
     let hasInput = false;
-
     if (currentMode === 'ai') {
         hasInput = promptTextarea.value.trim().length > 0;
     } else {
         const rows = replacementRows.querySelectorAll('.replacement-row');
         for (const row of rows) {
-            const find = row.querySelector('.find-input').value.trim();
-            if (find) {
+            if (row.querySelector('.find-input').value.trim()) {
                 hasInput = true;
                 break;
             }
         }
     }
-
     submitBtn.disabled = !selectedFile || !hasInput;
 }
 
@@ -205,7 +205,6 @@ submitBtn.addEventListener('click', handleSubmit);
 async function handleSubmit() {
     if (!selectedFile) return;
 
-    // Reset UI
     hideError();
     hideResult();
     showProgress();
@@ -215,13 +214,31 @@ async function handleSubmit() {
     const format = document.querySelector('input[name="format"]:checked').value;
 
     try {
-        let response;
+        const formData = new FormData();
+        formData.append('file', selectedFile);
+        formData.append('output_format', format);
 
         if (currentMode === 'ai') {
-            response = await submitAI(format);
+            formData.append('prompt', promptTextarea.value.trim());
         } else {
-            response = await submitManual(format);
+            const replacements = {};
+            const rows = replacementRows.querySelectorAll('.replacement-row');
+            for (const row of rows) {
+                const find = row.querySelector('.find-input').value.trim();
+                const replace = row.querySelector('.replace-input').value;
+                if (find) replacements[find] = replace;
+            }
+            formData.append('replacements', JSON.stringify(replacements));
+            formData.append('case_sensitive', caseSensitiveCheckbox.checked);
         }
+
+        animateProgress();
+
+        const endpoint = currentMode === 'ai' ? '/api/edit' : '/api/edit-simple';
+        const response = await fetch(`${API_BASE}${endpoint}`, {
+            method: 'POST',
+            body: formData,
+        });
 
         if (!response.ok) {
             let detail = 'Processing failed';
@@ -234,71 +251,8 @@ async function handleSubmit() {
             throw new Error(detail);
         }
 
-        // Get result
-        const blob = await response.blob();
-        const totalReplacements = response.headers.get('X-Total-Replacements') || '0';
-        const totalPages = response.headers.get('X-Total-Pages');
-
-        resultBlob = blob;
-
-        // Determine filename
-        const baseName = selectedFile.name.replace('.pdf', '');
-        if (format === 'pdf') {
-            resultFilename = `edited_${baseName}.pdf`;
-        } else {
-            resultFilename = `edited_${baseName}_page1.${format}`;
-        }
-
-        // Show result
-        let statsHtml = `<p>Total replacements made: <strong class="text-white">${totalReplacements}</strong></p>`;
-        if (totalPages) {
-            statsHtml += `<p>Total pages: ${totalPages}</p>`;
-        }
-
-        // Try to get metadata
-        const metadata = response.headers.get('X-Metadata');
-        if (metadata) {
-            try {
-                const meta = JSON.parse(metadata);
-                if (meta.replacements && meta.replacements.length > 0) {
-                    statsHtml += '<ul class="mt-2 space-y-1">';
-                    for (const r of meta.replacements) {
-                        statsHtml += `<li>"${escapeHtml(r.original)}" &rarr; "${escapeHtml(r.replacement)}" (${r.count} times)</li>`;
-                    }
-                    statsHtml += '</ul>';
-                }
-                if (meta.parsed_instructions && meta.parsed_instructions.notes) {
-                    statsHtml += `<p class="mt-2 text-yellow-400 text-xs">Note: ${escapeHtml(meta.parsed_instructions.notes)}</p>`;
-                }
-            } catch {}
-        }
-
-        const replacementsHeader = response.headers.get('X-Replacements');
-        if (replacementsHeader && !metadata) {
-            try {
-                const repls = JSON.parse(replacementsHeader);
-                if (repls.length > 0) {
-                    statsHtml += '<ul class="mt-2 space-y-1">';
-                    for (const r of repls) {
-                        statsHtml += `<li>"${escapeHtml(r.original)}" &rarr; "${escapeHtml(r.replacement)}" (${r.count} times)</li>`;
-                    }
-                    statsHtml += '</ul>';
-                }
-            } catch {}
-        }
-
-        resultStats.innerHTML = statsHtml;
-
-        // Image preview
-        if (format !== 'pdf' && blob.type.startsWith('image/')) {
-            const url = URL.createObjectURL(blob);
-            previewImg.src = url;
-            imagePreview.classList.remove('hidden');
-        } else {
-            imagePreview.classList.add('hidden');
-        }
-
-        showResult();
+        const data = await response.json();
+        showResultFromData(data);
 
     } catch (err) {
         showError(err.message);
@@ -309,44 +263,49 @@ async function handleSubmit() {
     }
 }
 
-async function submitAI(format) {
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-    formData.append('prompt', promptTextarea.value.trim());
-    formData.append('output_format', format);
+function showResultFromData(data) {
+    currentResultFileId = data.result_file_id;
 
-    // Animate progress
-    animateProgress();
+    // Stats
+    let statsHtml = `<p>Total replacements made: <strong class="text-white">${data.total_replacements}</strong></p>`;
+    statsHtml += `<p>Pages: ${data.total_pages} &bull; Format: ${data.output_format.toUpperCase()}</p>`;
 
-    return fetch(`${API_BASE}/api/edit`, {
-        method: 'POST',
-        body: formData,
-    });
-}
+    if (data.replacements_report && data.replacements_report.length > 0) {
+        statsHtml += '<ul class="mt-2 space-y-1">';
+        for (const r of data.replacements_report) {
+            statsHtml += `<li>"${escapeHtml(r.original)}" &rarr; "${escapeHtml(r.replacement)}" (${r.count} times)</li>`;
+        }
+        statsHtml += '</ul>';
+    }
 
-async function submitManual(format) {
-    const replacements = {};
-    const rows = replacementRows.querySelectorAll('.replacement-row');
-    for (const row of rows) {
-        const find = row.querySelector('.find-input').value.trim();
-        const replace = row.querySelector('.replace-input').value;
-        if (find) {
-            replacements[find] = replace;
+    if (data.parsed_instructions && data.parsed_instructions.notes) {
+        statsHtml += `<p class="mt-2 text-yellow-400 text-xs">Note: ${escapeHtml(data.parsed_instructions.notes)}</p>`;
+    }
+
+    resultStats.innerHTML = statsHtml;
+
+    // Preview images (with watermark)
+    previewContainer.innerHTML = '';
+    if (data.preview_images && data.preview_images.length > 0) {
+        for (let i = 0; i < data.preview_images.length; i++) {
+            const img = document.createElement('img');
+            img.src = 'data:image/jpeg;base64,' + data.preview_images[i];
+            img.alt = `Page ${i + 1}`;
+            img.className = 'max-w-full rounded-lg border border-gray-700';
+            if (data.preview_images.length > 1) {
+                const label = document.createElement('p');
+                label.className = 'text-xs text-gray-500 mb-1';
+                label.textContent = `Page ${i + 1} of ${data.preview_images.length}`;
+                previewContainer.appendChild(label);
+            }
+            previewContainer.appendChild(img);
         }
     }
 
-    const formData = new FormData();
-    formData.append('file', selectedFile);
-    formData.append('replacements', JSON.stringify(replacements));
-    formData.append('case_sensitive', caseSensitiveCheckbox.checked);
-    formData.append('output_format', format);
+    // Update price on button
+    payBtn.innerHTML = `&#x1F4B3; Pay &amp; Download Result — $${data.price_usd}`;
 
-    animateProgress();
-
-    return fetch(`${API_BASE}/api/edit-simple`, {
-        method: 'POST',
-        body: formData,
-    });
+    resultSection.classList.remove('hidden');
 }
 
 // --- Progress animation ---
@@ -371,18 +330,92 @@ function stopProgressAnimation() {
     progressBar.style.width = '100%';
 }
 
-// --- Download ---
+// --- Payment Modal ---
 
-downloadBtn.addEventListener('click', () => {
-    if (!resultBlob) return;
-    const url = URL.createObjectURL(resultBlob);
-    const a = document.createElement('a');
-    a.href = url;
-    a.download = resultFilename;
-    document.body.appendChild(a);
-    a.click();
-    document.body.removeChild(a);
-    URL.revokeObjectURL(url);
+payBtn.addEventListener('click', () => openPaymentModal());
+modalOverlay.addEventListener('click', () => closePaymentModal());
+modalCancel.addEventListener('click', () => closePaymentModal());
+
+function openPaymentModal() {
+    postPaySection.classList.add('hidden');
+    telegramRedirectHint.classList.remove('hidden');
+    paymentModal.classList.remove('hidden');
+    document.body.style.overflow = 'hidden';
+}
+
+function closePaymentModal() {
+    paymentModal.classList.add('hidden');
+    document.body.style.overflow = '';
+}
+
+// Telegram CryptoBot payment
+payTelegramBtn.addEventListener('click', async () => {
+    // Create invoice on backend
+    try {
+        const resp = await fetch(`${API_BASE}/api/create-invoice/${currentResultFileId}`, {
+            method: 'POST',
+        });
+        if (resp.ok) {
+            const invoice = await resp.json();
+            window.open(invoice.telegram_url, '_blank');
+        }
+    } catch (e) {
+        // Fallback: open placeholder
+        window.open('https://t.me/CryptoBot?start=PLACEHOLDER', '_blank');
+    }
+
+    // Show "I've paid" button
+    telegramRedirectHint.classList.add('hidden');
+    postPaySection.classList.remove('hidden');
+});
+
+// On-chain payment (coming soon)
+payOnchainBtn.addEventListener('click', () => {
+    alert('Coming soon — on-chain payment will be available shortly');
+});
+
+// Confirm payment & download
+confirmPaidBtn.addEventListener('click', async () => {
+    if (!currentResultFileId) return;
+
+    confirmPaidBtn.disabled = true;
+    confirmPaidBtn.textContent = 'Downloading...';
+
+    try {
+        const resp = await fetch(`${API_BASE}/api/download/${currentResultFileId}?token=temp`);
+        if (!resp.ok) {
+            throw new Error('Download failed');
+        }
+
+        const blob = await resp.blob();
+        const contentDisposition = resp.headers.get('content-disposition') || '';
+        let filename = 'edited.pdf';
+        const match = contentDisposition.match(/filename="?([^"]+)"?/);
+        if (match) filename = match[1];
+
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        document.body.appendChild(a);
+        a.click();
+        document.body.removeChild(a);
+        URL.revokeObjectURL(url);
+
+        closePaymentModal();
+    } catch (err) {
+        alert('Download failed: ' + err.message);
+    } finally {
+        confirmPaidBtn.disabled = false;
+        confirmPaidBtn.innerHTML = '&#x2705; I\'ve paid — Download';
+    }
+});
+
+// Close modal on Escape key
+document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape' && !paymentModal.classList.contains('hidden')) {
+        closePaymentModal();
+    }
 });
 
 // --- UI helpers ---
@@ -406,13 +439,9 @@ function hideError() {
     errorSection.classList.add('hidden');
 }
 
-function showResult() {
-    resultSection.classList.remove('hidden');
-}
-
 function hideResult() {
     resultSection.classList.add('hidden');
-    imagePreview.classList.add('hidden');
+    previewContainer.innerHTML = '';
 }
 
 function escapeHtml(str) {
