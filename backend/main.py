@@ -650,6 +650,7 @@ ONCHAIN_PAY_HTML = """<!DOCTYPE html>
 
             <div class="bg-amber-900/30 border border-amber-700 rounded-lg p-3">
                 <p class="text-xs text-amber-300">Important: Send the EXACT amount shown above. A different amount will not be detected automatically.</p>
+                <p id="solana-hint" class="hidden text-xs text-amber-300 mt-1">Solana: make sure you send <b>USDC</b> (not SOL). Select the USDC token in your wallet before scanning the QR.</p>
             </div>
 
             <div id="waiting" class="text-center space-y-2">
@@ -697,6 +698,9 @@ ONCHAIN_PAY_HTML = """<!DOCTYPE html>
 
             document.getElementById('step-network').classList.add('hidden');
             document.getElementById('step-pay').classList.remove('hidden');
+
+            var hint = document.getElementById('solana-hint');
+            if (network === 'solana') { hint.classList.remove('hidden'); } else { hint.classList.add('hidden'); }
 
             expiresAt = Date.now() + paymentData.expires_in * 1000;
             timerInterval = setInterval(updateTimer, 1000);

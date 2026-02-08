@@ -9,16 +9,10 @@ import qrcode  # type: ignore[import-untyped]
 def generate_payment_qr(wallet: str, amount: str, network: str) -> str:
     """Generate a QR code as a ``data:image/png;base64,...`` string.
 
-    * Solana → Solana Pay URI (``solana:<addr>?amount=<amount>``)
-    * EVM chains → plain wallet address (user enters amount manually)
+    All networks use the plain wallet address — the user selects the token
+    (USDC/USDT) manually in their wallet app.
     """
-    # USDC SPL token mint on Solana
-    USDC_MINT = "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
-
-    if network == "solana":
-        qr_data = f"solana:{wallet}?amount={amount}&spl-token={USDC_MINT}&label=PDF-Editor&message=Payment"
-    else:
-        qr_data = wallet
+    qr_data = wallet
 
     qr = qrcode.QRCode(version=1, box_size=8, border=2)
     qr.add_data(qr_data)
