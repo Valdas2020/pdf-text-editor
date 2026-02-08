@@ -8,5 +8,11 @@ services:
         sync: false
       - key: MAX_FILE_SIZE_MB
         value: "50"
+      - key: CRYPTOBOT_API_TOKEN
+        sync: false
+      - key: APP_BASE_URL
+        value: "https://pdf-text-editor.onrender.com"
+      - key: DOWNLOAD_SECRET
+        sync: false
     healthCheckPath: /api/health
     autoDeploy: true

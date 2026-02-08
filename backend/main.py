@@ -12,13 +12,14 @@ from pathlib import Path
 from typing import AsyncGenerator
 
 import fitz  # PyMuPDF
-from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, HTTPException, Request, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, HTMLResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 from PIL import Image
 
 from config import (
+    APP_BASE_URL,
     BASE_DIR,
     CLEANUP_INTERVAL_MINUTES,
     HOST,
@@ -27,7 +28,15 @@ from config import (
     PORT,
     UPLOAD_DIR,
 )
-from payment import PAYMENT_PRICE_USD, create_invoice, verify_payment
+from payment import (
+    PAYMENT_PRICE_USD,
+    create_invoice,
+    generate_download_token,
+    is_paid,
+    mark_paid,
+    verify_download_token,
+    verify_webhook_signature,
+)
 from pdf_editor import ReplacementResult, replace_text
 from watermark import add_watermark
 
@@ -324,23 +333,25 @@ async def edit_with_llm(
 
 @app.post("/api/create-invoice/{result_file_id}")
 async def create_invoice_endpoint(result_file_id: str) -> JSONResponse:
-    """Create a payment invoice for a result file."""
-    # Check that result file exists
+    """Create a CryptoBot payment invoice for a result file."""
     found = list(OUTPUT_DIR.glob(f"{result_file_id}.*"))
     if not found:
         raise HTTPException(status_code=404, detail="Result file not found or expired")
 
-    invoice = create_invoice(result_file_id)
+    try:
+        invoice = create_invoice(result_file_id)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
+
     return JSONResponse(invoice)
 
 
 @app.get("/api/download/{result_file_id}")
-async def download_result(result_file_id: str, token: str = "temp") -> FileResponse:
-    """Download the clean result file after payment verification."""
-    if not verify_payment(result_file_id, token):
-        raise HTTPException(status_code=403, detail="Payment not verified")
+async def download_result(result_file_id: str, token: str = "") -> FileResponse:
+    """Download the clean result file with a valid HMAC token."""
+    if not token or not verify_download_token(result_file_id, token):
+        raise HTTPException(status_code=403, detail="Invalid or missing download token")
 
-    # Find the result file
     found = list(OUTPUT_DIR.glob(f"{result_file_id}.*"))
     if not found:
         raise HTTPException(status_code=404, detail="Result file not found or expired")
@@ -355,6 +366,113 @@ async def download_result(result_file_id: str, token: str = "temp") -> FileRespo
         filename=f"edited.{ext}",
         media_type=media,
     )
+
+
+# ---------------------------------------------------------------------------
+# CryptoBot webhook
+# ---------------------------------------------------------------------------
+
+@app.post("/webhook/cryptobot")
+async def cryptobot_webhook(request: Request) -> JSONResponse:
+    """Handle CryptoBot webhook (invoice_paid event)."""
+    body = await request.body()
+    signature = request.headers.get("Crypto-Pay-Api-Signature", "")
+
+    if not verify_webhook_signature(body, signature):
+        logger.warning("CryptoBot webhook: invalid signature")
+        raise HTTPException(status_code=400, detail="Invalid signature")
+
+    try:
+        data = json.loads(body)
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=400, detail="Invalid JSON")
+
+    logger.info("CryptoBot webhook received: %s", data.get("update_type"))
+
+    if data.get("update_type") == "invoice_paid":
+        payload = data.get("payload", {})
+        result_file_id = payload.get("payload", "")  # our payload = result_file_id
+        if result_file_id:
+            mark_paid(result_file_id)
+            logger.info("Webhook: marked %s as paid", result_file_id)
+
+    return JSONResponse({"status": "ok"})
+
+
+# ---------------------------------------------------------------------------
+# Download page (post-payment landing)
+# ---------------------------------------------------------------------------
+
+DOWNLOAD_PAGE_HTML = """<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Download — PDF Text Editor</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {{
+            theme: {{ extend: {{ colors: {{ dark: '#0f172a', accent: '#3b82f6' }} }} }}
+        }}
+    </script>
+</head>
+<body class="bg-dark text-gray-100 min-h-screen flex items-center justify-center">
+    <div class="max-w-md w-full mx-4 text-center">
+        <div id="paid" class="{paid_class}">
+            <div class="text-5xl mb-4">&#x2705;</div>
+            <h1 class="text-2xl font-bold mb-2">Payment confirmed!</h1>
+            <p class="text-gray-400 mb-6">Your edited PDF is ready for download.</p>
+            <a href="{download_url}"
+               class="inline-block w-full bg-green-600 hover:bg-green-700 text-white font-semibold py-3 px-6 rounded-xl transition-colors">
+                Download file
+            </a>
+        </div>
+        <div id="waiting" class="{waiting_class}">
+            <div class="text-5xl mb-4">&#x23F3;</div>
+            <h1 class="text-2xl font-bold mb-2">Waiting for payment…</h1>
+            <p class="text-gray-400 mb-6">Complete the payment in Telegram, then this page will refresh automatically.</p>
+            <p class="text-xs text-gray-600">Checking every 5 seconds…</p>
+        </div>
+        <p class="mt-8 text-xs text-gray-600">
+            <a href="/" class="hover:text-gray-400">&larr; Back to PDF Text Editor</a>
+        </p>
+    </div>
+    <script>
+        // Auto-refresh while waiting for payment
+        if (document.getElementById('waiting').style.display !== 'none'
+            && !document.getElementById('waiting').classList.contains('hidden')) {{
+            setInterval(() => location.reload(), 5000);
+        }}
+    </script>
+</body>
+</html>"""
+
+
+@app.get("/download-page/{result_file_id}")
+async def download_page(result_file_id: str) -> HTMLResponse:
+    """Post-payment landing page with download link."""
+    found = list(OUTPUT_DIR.glob(f"{result_file_id}.*"))
+    if not found:
+        raise HTTPException(status_code=404, detail="Result file not found or expired")
+
+    paid = is_paid(result_file_id)
+
+    if paid:
+        token = generate_download_token(result_file_id)
+        download_url = f"{APP_BASE_URL}/api/download/{result_file_id}?token={token}"
+        html = DOWNLOAD_PAGE_HTML.format(
+            paid_class="",
+            waiting_class="hidden",
+            download_url=download_url,
+        )
+    else:
+        html = DOWNLOAD_PAGE_HTML.format(
+            paid_class="hidden",
+            waiting_class="",
+            download_url="#",
+        )
+
+    return HTMLResponse(html)
 
 
 # Serve frontend index at root

@@ -44,7 +44,7 @@ const modalCancel = document.getElementById('modal-cancel');
 const payTelegramBtn = document.getElementById('pay-telegram-btn');
 const payOnchainBtn = document.getElementById('pay-onchain-btn');
 const postPaySection = document.getElementById('post-pay-section');
-const confirmPaidBtn = document.getElementById('confirm-paid-btn');
+const downloadPageLink = document.getElementById('download-page-link');
 const telegramRedirectHint = document.getElementById('telegram-redirect-hint');
 
 // State
@@ -350,65 +350,44 @@ function closePaymentModal() {
 
 // Telegram CryptoBot payment
 payTelegramBtn.addEventListener('click', async () => {
-    // Create invoice on backend
+    if (!currentResultFileId) return;
+
+    payTelegramBtn.disabled = true;
+    payTelegramBtn.style.opacity = '0.7';
+
     try {
         const resp = await fetch(`${API_BASE}/api/create-invoice/${currentResultFileId}`, {
             method: 'POST',
         });
-        if (resp.ok) {
-            const invoice = await resp.json();
-            window.open(invoice.telegram_url, '_blank');
-        }
-    } catch (e) {
-        // Fallback: open placeholder
-        window.open('https://t.me/CryptoBot?start=PLACEHOLDER', '_blank');
-    }
 
-    // Show "I've paid" button
-    telegramRedirectHint.classList.add('hidden');
-    postPaySection.classList.remove('hidden');
+        if (!resp.ok) {
+            let detail = 'Failed to create invoice';
+            try {
+                const err = await resp.json();
+                detail = err.detail || detail;
+            } catch {}
+            throw new Error(detail);
+        }
+
+        const invoice = await resp.json();
+        window.open(invoice.pay_url, '_blank');
+
+        // Show post-pay section with download page link
+        telegramRedirectHint.classList.add('hidden');
+        downloadPageLink.href = `/download-page/${currentResultFileId}`;
+        postPaySection.classList.remove('hidden');
+
+    } catch (e) {
+        alert('Error: ' + e.message);
+    } finally {
+        payTelegramBtn.disabled = false;
+        payTelegramBtn.style.opacity = '';
+    }
 });
 
 // On-chain payment (coming soon)
 payOnchainBtn.addEventListener('click', () => {
     alert('Coming soon — on-chain payment will be available shortly');
-});
-
-// Confirm payment & download
-confirmPaidBtn.addEventListener('click', async () => {
-    if (!currentResultFileId) return;
-
-    confirmPaidBtn.disabled = true;
-    confirmPaidBtn.textContent = 'Downloading...';
-
-    try {
-        const resp = await fetch(`${API_BASE}/api/download/${currentResultFileId}?token=temp`);
-        if (!resp.ok) {
-            throw new Error('Download failed');
-        }
-
-        const blob = await resp.blob();
-        const contentDisposition = resp.headers.get('content-disposition') || '';
-        let filename = 'edited.pdf';
-        const match = contentDisposition.match(/filename="?([^"]+)"?/);
-        if (match) filename = match[1];
-
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        document.body.appendChild(a);
-        a.click();
-        document.body.removeChild(a);
-        URL.revokeObjectURL(url);
-
-        closePaymentModal();
-    } catch (err) {
-        alert('Download failed: ' + err.message);
-    } finally {
-        confirmPaidBtn.disabled = false;
-        confirmPaidBtn.innerHTML = '&#x2705; I\'ve paid — Download';
-    }
 });
 
 // Close modal on Escape key

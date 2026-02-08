@@ -26,6 +26,14 @@ MAX_FILE_SIZE_MB: int = int(os.getenv("MAX_FILE_SIZE_MB", "50"))
 MAX_FILE_SIZE_BYTES: int = MAX_FILE_SIZE_MB * 1024 * 1024
 CLEANUP_INTERVAL_MINUTES: int = int(os.getenv("CLEANUP_INTERVAL_MINUTES", "60"))
 
+# CryptoBot
+CRYPTOBOT_API_TOKEN: str = os.getenv("CRYPTOBOT_API_TOKEN", "")
+CRYPTOBOT_API_URL: str = "https://pay.crypt.bot/api"
+
+# App / Download
+APP_BASE_URL: str = os.getenv("APP_BASE_URL", "https://pdf-text-editor.onrender.com")
+DOWNLOAD_SECRET: str = os.getenv("DOWNLOAD_SECRET", "change-me-in-production")
+
 # Server
 HOST: str = os.getenv("HOST", "0.0.0.0")
 PORT: int = int(os.getenv("PORT", "10000"))
