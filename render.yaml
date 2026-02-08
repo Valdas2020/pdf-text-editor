@@ -1,0 +1,12 @@
+services:
+  - type: web
+    name: pdf-text-editor
+    runtime: docker
+    plan: free
+    envVars:
+      - key: ROUTELLM_API_KEY
+        sync: false
+      - key: MAX_FILE_SIZE_MB
+        value: "50"
+    healthCheckPath: /api/health
+    autoDeploy: true
