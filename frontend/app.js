@@ -385,9 +385,11 @@ payTelegramBtn.addEventListener('click', async () => {
     }
 });
 
-// On-chain payment (coming soon)
+// On-chain USDT/USDC payment
 payOnchainBtn.addEventListener('click', () => {
-    alert('Coming soon — on-chain payment will be available shortly');
+    if (!currentResultFileId) return;
+    window.open(`/onchain-pay/${currentResultFileId}`, '_blank');
+    closePaymentModal();
 });
 
 // Close modal on Escape key

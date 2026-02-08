@@ -8,3 +8,4 @@ pdf2image==1.17.0
 pytesseract==0.3.13
 httpx==0.28.1
 requests==2.32.3
+qrcode[pil]==8.0
